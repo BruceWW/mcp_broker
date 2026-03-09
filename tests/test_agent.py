@@ -9,8 +9,8 @@
 
 import pytest
 from langchain_openai import ChatOpenAI
-from mcp_agent_linker.loader import MCPLoader
-from mcp_agent_linker.agent import MCPAgentLinker
+from mcp_broker.loader import MCPLoader
+from mcp_broker.agent import MCPAgentLinker
 from langchain_core.messages import HumanMessage
 
 MCP_URL = "http://127.0.0.1:8765/mcp"

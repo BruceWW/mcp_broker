@@ -1,7 +1,7 @@
 """MCPLoader 集成测试 — 需要先启动 mcp_test_server"""
 
 import pytest
-from mcp_agent_linker.loader import MCPLoader, AgentDef
+from mcp_broker.loader import MCPLoader, AgentDef
 
 MCP_URL = "http://127.0.0.1:8765/mcp"
 

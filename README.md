@@ -1,6 +1,6 @@
-# mcp-agent-linker
+# mcp-broker
 
-**MCP server as Agent** — 用 MCP server 作为域 Agent 的完整定义载体，通过通用插件动态实例化，实现工具上下文隔离和零代码接入新领域。
+**MCP server as Agent** — 用 MCP server 作为域 Agent 的完整定义载体，通过通用框架动态实例化，实现工具上下文隔离和零代码接入新领域。
 
 ## 背景
 
@@ -17,7 +17,7 @@
 - **Resources** — 提供领域知识和 Skills（约定 URI 格式 `skill:///<name>`）
 - **Tools** — 暴露可执行的能力
 
-因此，**一个 MCP server = 一个完整的域 Agent 定义**。本项目基于此构建通用框架：配置 MCP 地址列表，插件自动实例化对应的域 Agent，子 Agent 工具上下文完全隔离。
+因此，**一个 MCP server = 一个完整的域 Agent 定义**。本项目基于此构建通用框架：配置 MCP 地址列表，框架自动实例化对应的域 Agent，子 Agent 工具上下文完全隔离。
 
 ```
 接入新领域 = 新增一行 MCP 地址配置，不改框架代码
@@ -29,18 +29,20 @@
 配置层: [MCP-A地址, MCP-B地址, ...]
          │
          ▼
-主 Agent（意图识别 + 编排）
-         │ 识别到目标域
+MCPAgentLinker（主 Agent：意图识别 + 路由）
+         │ 识别到目标域，调用对应子 Agent tool
          ▼
-Plugin（子 Agent 工厂）
-  └─ MCPLoader: 读取 prompt / resources / tools
-  └─ ResourcesParser: 解析 skills
-  └─ 实例化 LangChain Agent
+MCPLoader（子 Agent 工厂）
+  └─ 从 MCP server 读取 prompt / tools / skills
+  └─ 实例化子 Agent（LangGraph ReAct 图）
          │
          ▼
 子 Agent（工具上下文完全隔离）
-  └─ 执行完毕 → 返回文本结果给主 Agent
+  └─ 调用 MCP tools 执行任务
+  └─ 返回文本结果给主 Agent
 ```
+
+**渐进式 Skill 披露**：子 Agent 启动时只注入 skill 目录（name + description），按需再加载具体内容，避免 prompt 膨胀。
 
 ## 安装
 
@@ -56,28 +58,44 @@ uv sync --extra dev
 
 ## 快速上手
 
+### 方式一：直接用 MCPAgentLinker（推荐）
+
 ```python
-from mcp_agent_linker import MCPLoader
-from langchain_core.prompts import ChatPromptTemplate
-from langchain.agents import create_react_agent, AgentExecutor
+from langchain_openai import ChatOpenAI
+from mcp_broker import MCPLoader, MCPAgentLinker
+from langchain_core.messages import HumanMessage
+
+model = ChatOpenAI(model="deepseek-chat", base_url="https://api.deepseek.com/v1")
+
+loaders = [
+    MCPLoader("http://food-mcp/mcp", name="food_agent"),
+    MCPLoader("http://calendar-mcp/mcp", name="calendar_agent"),
+]
+
+agent = MCPAgentLinker(model=model, mcp_loaders=loaders)
+result = agent.invoke({"messages": [HumanMessage(content="帮我点个午饭，30 块以内")]})
+print(result["messages"][-1].content)
+```
+
+### 方式二：手动加载 AgentDef（自定义集成）
+
+```python
+from mcp_broker import MCPLoader
+from langchain.agents import create_agent
 
 # 从 MCP server 加载域 Agent 定义
 agent_def = MCPLoader("http://your-mcp-server/mcp").load()
 
 # agent_def.system_prompt — MCP prompt 文本
 # agent_def.tools         — LangChain BaseTool 列表
-# agent_def.skills        — skill 文本列表（来自 skill:/// resources）
+# agent_def.skills        — Skill 对象列表（来自 skill:/// resources）
 
-system = agent_def.system_prompt + "\n\n" + "\n\n".join(agent_def.skills)
-prompt = ChatPromptTemplate.from_messages([
-    ("system", system),
-    ("human", "{input}"),
-    ("placeholder", "{agent_scratchpad}"),
-])
+# 注入 skill 目录到 system prompt（渐进式披露）
+skill_index = "\n".join(s.summary() for s in agent_def.skills)
+system = agent_def.system_prompt + f"\n\n## 可用 Skills\n{skill_index}"
 
-agent = create_react_agent(llm, agent_def.tools, prompt)
-executor = AgentExecutor(agent=agent, tools=agent_def.tools)
-executor.invoke({"input": "帮我点个午饭，30 块以内"})
+agent = create_agent(model, tools=agent_def.tools, system_prompt=system)
+result = agent.invoke({"messages": [HumanMessage(content="帮我点个午饭，30 块以内")]})
 ```
 
 ## 开发
@@ -86,14 +104,18 @@ executor.invoke({"input": "帮我点个午饭，30 块以内"})
 # 启动本地测试服务（外卖域 mock）
 uv run python tests/food_agent_server.py
 
-# 运行测试
-uv run pytest tests/ -v -s
+# 运行 MCPLoader 测试
+uv run pytest tests/test_loader.py -v -s
+
+# 运行 MCPAgentLinker 端到端测试（需先启动 food_agent_server）
+uv run pytest tests/test_agent.py -v -s
 ```
 
 ## 实现进度
 
 - [x] 核心架构设计
-- [x] `MCPLoader` — 读取 MCP server，返回 `AgentDef`（prompt / tools / skills）
-- [ ] `ResourcesParser` — 扩展 skill 解析逻辑
-- [ ] `MCPAgentLinker` — 主封装类，传入 MCP 地址直接创建可执行 Agent
-- [ ] 主 Agent 编排层（意图识别 + 多域协作）
+- [x] `MCPLoader` — 从 MCP server 读取 prompt / tools / skills，返回 `AgentDef`
+- [x] `MCPAgentLinker` — 主 Agent，传入 MCP 地址列表直接创建可执行 Agent
+- [x] 主 Agent 编排层 — 基于 skill description 做意图路由，调用对应子 Agent
+- [x] 渐进式 Skill 披露 — `Skill.summary()` 目录层 / `Skill.full_text()` 内容层
+- [ ] `ResourcesParser` — 扩展 skill 解析逻辑（当前由 MCPLoader 内部处理）
